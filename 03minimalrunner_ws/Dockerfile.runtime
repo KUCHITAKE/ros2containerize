@@ -1,0 +1,54 @@
+ARG ROS_DISTRO=humble
+FROM ros:${ROS_DISTRO}-ros-base AS builder
+
+ARG ROS_DISTRO=humble
+
+RUN apt-get update && apt-get install -y \
+    python3-rosdep \
+    python3-bloom \
+    debhelper \
+    dh-python \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /package
+
+COPY ./src/cpp_pubsub /package
+
+RUN cd /package &&\
+    sh /opt/ros/${ROS_DISTRO}/setup.sh &&\
+    rosdep update &&\
+    rosdep install -i --from-paths . --rosdistro ${ROS_DISTRO} -y &&\
+    bloom-generate rosdebian &&\
+    debian/rules binary
+
+FROM ros:${ROS_DISTRO}-ros-core AS installer
+ARG ROS_DISTRO=humble
+ENV ROS_DISTRO=${ROS_DISTRO}
+
+COPY --from=builder /ros-${ROS_DISTRO}-cpp-pubsub*.deb /tmp/
+
+RUN apt-get update && apt-get install -y \
+    libtree \
+    /tmp/ros-${ROS_DISTRO}-cpp-pubsub*.deb && \
+    rm -rf /var/lib/apt/lists/*
+
+
+RUN mkdir /deps && \
+    /bin/bash -c "source /opt/ros/humble/setup.sh && \
+    libtree /opt/ros/${ROS_DISTRO}/lib/cpp_pubsub/talker -p | sed 's/├//g; s/└//g; s/─//g; s/│//g' | grep -oP '/[^ ]+' | tail -n +2 | sort -u | xargs -I {} cp -L -f {} /deps && \
+    libtree /opt/ros/${ROS_DISTRO}/lib/cpp_pubsub/listener -p | sed 's/├//g; s/└//g; s/─//g; s/│//g' | grep -oP '/[^ ]+' | tail -n +2 | sort -u | xargs -I {} cp -L -f {} /deps && \
+    libtree /opt/ros/${ROS_DISTRO}/lib/librclcpp.so -p | sed 's/├//g; s/└//g; s/─//g; s/│//g' |  grep -v py | grep -oP '/[^ ]+' | sort -u | xargs -I {} cp -L -f {} /deps && \
+    libtree /opt/ros/${ROS_DISTRO}/lib/librcl_interfaces__rosidl_typesupport*.so -p | grep -v generator | sed 's/├//g; s/└//g; s/─//g; s/│//g' |  grep -v py | grep -oP '/[^ ]+' | sort -u | xargs -I {} cp -L -f {} /deps && \
+    libtree /opt/ros/${ROS_DISTRO}/lib/libstd_msgs__rosidl_typesupport* -p | grep -v generator | sed 's/├//g; s/└//g; s/─//g; s/│//g' | grep -v py | grep -oP '/[^ ]+' | sort -u | xargs -I {} cp -L -f {} /deps && \
+    libtree /opt/ros/${ROS_DISTRO}/lib/librmw_fastrtps_cpp.so -p | sed 's/├//g; s/└//g; s/─//g; s/│//g' | grep -v py | grep -oP '/[^ ]+' | sort -u | xargs -I {} cp -L -f {} /deps && \
+    libtree /opt/ros/${ROS_DISTRO}/lib/librmw_dds_common__rosidl_typesupport* -p | grep -v generator | sed 's/├//g; s/└//g; s/─//g; s/│//g' | grep -v py | grep -oP '/[^ ]+' | sort -u | xargs -I {} cp -L -f {} /deps"
+
+FROM gcr.io/distroless/cc-debian12
+ARG ROS_DISTRO=humble
+
+COPY --from=installer /deps /usr/lib
+COPY --from=installer /opt/ros/${ROS_DISTRO}/lib/cpp_pubsub/talker /bin
+COPY --from=installer /opt/ros/${ROS_DISTRO}/lib/cpp_pubsub/listener /bin
+ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+CMD [ "talker" ]
